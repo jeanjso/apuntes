@@ -391,6 +391,23 @@ yay -S paquete-aur
 
 ## 6. Git y GitHub
 
+### Índice de la sección
+
+- [Qué es Git](#qué-es-git)
+- [Configuración inicial](#configuración-inicial)
+- [Conceptos clave](#conceptos-clave)
+- [Flujo básico](#flujo-básico)
+- [Commits convencionales (Conventional Commits)](#commits-convencionales-conventional-commits)
+- [Branches (ramas)](#branches-ramas)
+- [Pull Requests (PRs)](#pull-requests-prs)
+- [Merge vs Rebase: dos formas de integrar cambios](#merge-vs-rebase-dos-formas-de-integrar-cambios)
+- [Rebase interactivo: limpiar historia antes de pushear](#rebase-interactivo-limpiar-historia-antes-de-pushear)
+- [Reflog: la red de seguridad de Git](#reflog-la-red-de-seguridad-de-git)
+- [Comandos útiles](#comandos-útiles)
+- [.gitignore](#gitignore)
+
+---
+
 ### Qué es Git
 
 Git es un **sistema de control de versiones distribuido**. Te permite:
@@ -416,6 +433,8 @@ git config --global core.editor "code --wait"
 
 Verificar con: `git config --global --list`
 
+> ⚠️ Si Git no encuentra el editor configurado, cae al default `vi`. Si `vi` no está instalado (como en CachyOS por default), te tira `error: unable to start editor 'vi'` cuando intentes hacer `commit` sin `-m`, `rebase -i`, o cualquier operación que requiera abrir un editor. Tener `core.editor` configurado desde el día 1 evita el problema.
+
 ### Conceptos clave
 
 - **Repository (repo):** un proyecto con historial de Git. Es una carpeta con una subcarpeta oculta `.git/` adentro.
@@ -424,6 +443,7 @@ Verificar con: `git config --global --list`
 - **Commit:** una "foto" del estado del proyecto en un momento. Cada commit tiene un mensaje y un hash único.
 - **Branch (rama):** una línea paralela de desarrollo. `main` es la principal por convención.
 - **Remote:** una copia del repo en otro lugar (GitHub, etc.). El remote por defecto se llama `origin`.
+- **HEAD:** puntero que indica dónde estoy parado en la historia (típicamente el último commit de la rama actual).
 
 ### Flujo básico
 
@@ -484,6 +504,10 @@ docs: actualizar README con instrucciones de setup
 refactor: extraer lógica de fetch a módulo separado
 ```
 
+**Regla mental fix vs feat:**
+- `fix:` → estoy arreglando algo que ya estaba en `main` y funcionaba mal.
+- `feat:` → estoy construyendo algo nuevo (incluso si durante el desarrollo "corrijo" mi propio código antes de mergear).
+
 ### Branches (ramas)
 
 **Nunca trabajes directo en `main`.** Cada feature/cambio va en su propia rama.
@@ -493,7 +517,8 @@ refactor: extraer lógica de fetch a módulo separado
 git checkout -b feat/buscador
 
 # Ver en qué rama estás
-git branch
+git branch                    # lista con asterisco en la actual
+git branch --show-current     # solo el nombre, más rápido
 
 # Cambiarte a otra rama existente
 git checkout main
@@ -503,7 +528,19 @@ git merge feat/buscador
 
 # Borrar una rama ya mergeada
 git branch -d feat/buscador
+# Forzar borrado (peligroso, ignora si está mergeada o no)
+git branch -D feat/buscador
 ```
+
+**Regla de oro al crear una rama nueva:** siempre desde un `main` actualizado.
+
+```bash
+git checkout main
+git pull origin main          # ← traer últimos cambios remotos
+git checkout -b feat/nueva-cosa
+```
+
+Si te saltás el `pull`, tu rama nace "atrás" de main y vas a tener que sincronizar después (con conflictos potenciales). Es la causa #1 de divergencias raras en juniors.
 
 ### Pull Requests (PRs)
 
@@ -524,11 +561,190 @@ Flujo típico:
 7. Merge.
 8. Borrar la rama.
 
+**Cerrar issues desde el PR:** en la descripción del PR escribí `Closes #N` (o `Fixes #N`, `Resolves #N`). Cuando se mergea, GitHub cierra el issue automáticamente. Conecta planificación con código.
+
+### Merge vs Rebase: dos formas de integrar cambios
+
+Cuando dos ramas divergieron y querés "juntarlas", hay dos estrategias. Entender la diferencia es clave para no romper el repo.
+
+#### Merge (lo conservador)
+
+```bash
+git checkout main
+git merge feat/buscador
+```
+
+Toma el último commit de `feat/buscador` y lo combina con `main`, creando un **merge commit** nuevo si hubo divergencia.
+
+**Ventaja:** preserva la historia tal cual ocurrió. Si tu rama vivió 3 días en paralelo, queda registrado.
+**Desventaja:** la historia se vuelve "ramificada" y a veces difícil de leer con muchos PRs.
+
+#### Rebase (el quirúrgico)
+
+```bash
+git checkout feat/buscador
+git rebase main
+```
+
+**Reescribe** los commits de `feat/buscador` para que aparezcan como si hubieran salido de `main` actualizado. Resultado: historia lineal y limpia, sin merge commits.
+
+**Ventaja:** historia clara, fácil de leer, ideal para PRs con pocos commits.
+**Desventaja:** reescribe historia → los hashes de commits cambian. Si esos commits ya estaban pusheados a una rama compartida, **rompés el repo de los demás**.
+
+#### ⚠️ REGLA DE ORO DEL REBASE
+
+**Nunca hagas rebase de commits que ya estén pusheados a una rama compartida.** Los hashes cambian, y cualquiera que tuviera esos commits queda con una "rama paralela" rota. Solo se rebasea historia **local** (commits que solo viven en tu compu).
+
+#### Cuándo usar cada uno (opinión de senior)
+
+| Situación | Estrategia |
+|---|---|
+| Mergear PR a `main` en GitHub | **Merge** (GitHub crea el merge commit) |
+| Actualizar tu rama de feature con cambios de `main` antes del PR | Cualquiera; merge es más seguro al empezar |
+| Tu rama tiene 5 commits "WIP" feos y querés limpiarlos antes del PR | **Rebase interactivo** (ver sección siguiente) |
+| Conflictos complicados con muchos archivos | **Merge** (resolves una vez, no por commit) |
+
+### Rebase interactivo: limpiar historia antes de pushear
+
+El rebase interactivo (`-i`) te deja **editar la lista de commits** antes de aplicarlos: fusionar, reordenar, renombrar mensajes, o descartar commits.
+
+#### Caso de uso típico
+
+Hiciste 3 commits durante el desarrollo: `feat: empezar buscador`, `fix: typo`, `wip: terminar buscador`. Antes de abrir el PR, querés que aparezca **un solo commit limpio**: `feat: buscador con preview de audio`.
+
+#### Comando
+
+```bash
+git rebase -i HEAD~3
+```
+
+`HEAD~3` = "los 3 últimos commits". Git abre un editor con la lista:
+
+```
+pick a1b2c3d feat: empezar buscador
+pick e4f5g6h fix: typo
+pick i7j8k9l wip: terminar buscador
+```
+
+Los commits aparecen en **orden cronológico** (el más viejo arriba), al revés que en `git log`.
+
+#### Operaciones disponibles
+
+| Comando | Corto | Qué hace |
+|---|---|---|
+| `pick` | `p` | Mantener el commit como está |
+| `reword` | `r` | Mantener el commit pero cambiar el mensaje |
+| `edit` | `e` | Pausar acá para modificar el commit (avanzado) |
+| `squash` | `s` | Fusionar con el commit anterior (combina mensajes) |
+| `fixup` | `f` | Fusionar con el anterior pero **descarta** el mensaje del commit fusionado |
+| `drop` | `d` | Eliminar el commit por completo |
+
+Para el caso del ejemplo, editás la lista a:
+
+```
+pick a1b2c3d feat: empezar buscador
+squash e4f5g6h fix: typo
+squash i7j8k9l wip: terminar buscador
+```
+
+Guardás, cerrás el editor. Git abre **otro editor** con los mensajes combinados de los tres commits para que escribas el mensaje final. Editás, guardás, cerrás. Listo: ahora tenés un solo commit.
+
+#### Comandos de emergencia
+
+Si algo sale mal durante un rebase (conflicto, lo iniciaste por error, etc.):
+
+```bash
+git rebase --abort        # ⭐ cancela todo y vuelve al estado anterior
+git rebase --continue     # después de resolver conflictos, sigue
+git rebase --skip         # saltarse el commit actual (avanzado)
+```
+
+`--abort` es tu botón de pánico: no es destructivo, te devuelve a como estabas antes del `rebase -i`. Usalo sin culpa.
+
+#### Tip: GitLens Interactive Rebase
+
+Si tenés VS Code con la extensión GitLens, al lanzar `git rebase -i HEAD~N` se abre una **UI gráfica** con dropdowns para cada commit. Más a prueba de errores que editar el archivo de texto. Ojo: GitLens muestra los commits en orden **inverso** al editor de texto (más nuevo arriba), pero la lógica es la misma.
+
+#### Ejemplo real (Issue #3 de music-finder)
+
+Terminé con dos commits duplicados accidentalmente, ambos con el mismo mensaje:
+
+```
+0f5751e feat: integración con iTunes Search API
+b0e138f feat: integración con iTunes Search API
+```
+
+Como **no los había pusheado todavía** (vivían solo en local), pude hacer `git rebase -i HEAD~2` y squashearlos en uno solo. El commit final quedó con un hash nuevo (`b1394c3`) porque al reescribir historia, Git genera un commit nuevo. Aprendizaje: si hubiera pusheado antes, ya no podría haber hecho esa limpieza sin romper el repo remoto.
+
+### Reflog: la red de seguridad de Git
+
+El **reflog** es el log de TODOS los movimientos de `HEAD` en tu repo local. Cada vez que hacés un commit, cambiás de rama, hacés reset, rebase, merge, lo que sea — queda registrado en el reflog.
+
+**Esto significa una cosa enorme:** Git **nunca borra de verdad nada** que vos hayas commiteado, al menos durante un tiempo. Aunque borres una rama, hagas `reset --hard`, o pierdas commits en un rebase, las "huellas" siguen ahí.
+
+#### Comando básico
+
+```bash
+git reflog
+```
+
+Te muestra los últimos movimientos en orden cronológico **inverso** (el más reciente arriba):
+
+```
+0d1cc2e HEAD@{0}: pull origin main: Fast-forward
+6afd9d5 HEAD@{1}: checkout: moving from feat/itunes-api to main
+b1394c3 HEAD@{2}: rebase -i (finish): returning to refs/heads/feat/itunes-api
+b1394c3 HEAD@{3}: rebase -i (squash): feat: integración con iTunes Search API
+0f5751e HEAD@{4}: commit: feat: integración con iTunes Search API
+b0e138f HEAD@{5}: commit: feat: integración con iTunes Search API
+```
+
+Cada línea tiene:
+- **Hash** del commit donde estaba `HEAD` en ese momento.
+- **`HEAD@{N}`**: el "N" es la posición en el reflog (0 = más reciente).
+- **Descripción** de la operación (commit, checkout, rebase, reset, etc.).
+
+#### Para qué sirve realmente
+
+| Situación | Cómo recuperar con reflog |
+|---|---|
+| Borraste una rama por error | Encontrás su último commit en reflog, `git branch nombre-rama <hash>` |
+| Hiciste `git reset --hard` y perdiste commits | `git reset --hard <hash>` al estado anterior |
+| Un rebase te dejó la rama vacía o rota | `git reset --hard <hash>` antes del rebase |
+| "Desaparecieron" archivos al cambiar de rama (en realidad están en otro commit) | `git checkout <rama-correcta>` |
+
+#### Cuánto dura el reflog
+
+Por default:
+- **30 días** para commits "no alcanzables" (no apuntados por ninguna rama o tag).
+- **90 días** para commits alcanzables.
+
+Configurable con `gc.reflogExpire`. En la práctica, si te diste cuenta del problema en el mismo día o semana, **el reflog te salva**.
+
+#### Limitaciones importantes
+
+- **El reflog es LOCAL**. No se sincroniza con remotos. Si clonás un repo en otra máquina, no tenés el reflog de la original.
+- **No incluye archivos sin commitear.** Si hiciste cambios en disco sin agregar a stage ni commitear y los descartaste con `git restore .`, el reflog NO los recupera. Para eso existe `git stash`.
+
+#### Flujo de pánico (cuando creés que perdiste trabajo)
+
+1. **No corras nada destructivo todavía.** No `reset`, no `checkout` forzado.
+2. `git status` para ver el estado actual.
+3. `git reflog | head -20` para ver tu historia reciente.
+4. Identificá el hash donde estaba tu trabajo (busca el último `commit:` del trabajo que querés).
+5. Decidí cómo volver:
+   - Si querés mover tu rama actual a ese punto: `git reset --hard <hash>`.
+   - Si querés ir a ese commit "de visita": `git checkout <hash>`.
+   - Si querés crear una rama nueva desde ese commit: `git branch rescate <hash>`.
+
+Ver el incidente concreto en **Situaciones → 14.1 (Recuperar trabajo "perdido" después de cambiar de rama)**.
+
 ### Comandos útiles
 
 ```bash
 # Ver historial bonito
 git log --oneline --graph --decorate -20
+git log --oneline --graph --all -20      # incluye TODAS las ramas
 
 # Ver qué cambió desde el último commit
 git diff
@@ -536,7 +752,11 @@ git diff
 # Ver cambios ya en staging
 git diff --staged
 
-# Descartar cambios no commiteados
+# Descartar cambios no commiteados (versión moderna)
+git restore archivo.txt
+git restore .                             # todos los archivos
+
+# Descartar cambios no commiteados (versión vieja, también funciona)
 git checkout -- archivo.txt
 
 # Deshacer el último commit (manteniendo cambios)
@@ -547,8 +767,20 @@ git reset --hard HEAD~1
 
 # Guardar cambios temporalmente sin commitear
 git stash
+git stash push -m "WIP: descripción del por qué"
 # y recuperarlos:
 git stash pop
+git stash list                            # ver pila de stashes
+
+# Modificar el último commit (mensaje o agregar archivos)
+git commit --amend                        # abre editor para cambiar mensaje
+git commit --amend --no-edit              # mantiene el mensaje, agrega cambios staged
+
+# Ver qué archivos modificó un commit
+git show --stat <hash>
+
+# Probar conexión SSH a GitHub
+ssh -T git@github.com
 ```
 
 ### .gitignore
@@ -566,6 +798,8 @@ build/
 ```
 
 **Regla de oro:** nunca subas `node_modules/` (gigante e innecesario), ni archivos con secretos (`.env`).
+
+> Si ya commiteaste algo que debería estar en `.gitignore`, agregarlo al archivo NO lo saca del repo. Hay que ejecutar `git rm --cached <archivo>` y commitear ese borrado. Por eso conviene tener `.gitignore` desde el primer commit.
 
 ---
 
